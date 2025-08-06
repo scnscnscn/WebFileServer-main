@@ -1,184 +1,194 @@
-/*  文件说明：
- *  1. 该文件中定义的类用于在事件处理中表示 “请求消息” 和 “响应消息”
- *  2. Message 是基类，用来保存两种消息共有的信息：消息处理的状态和消息首部的信息
- *  3. Request 表示浏览器的请求消息，用来记录其中的重要字段，及事件处理中对请求消息处理了多少
- *  4. Response 表示向客户端回复的响应消息，记录响应消息中待发送的数据，如状态行、首部、消息体、响应消息已发送多少
- */
+#pragma once
 
-#ifndef MESSAGE_H
-#define MESSAGE_H
-#include <iostream>
 #include <string>
-#include <sstream>
-#include <map>
 #include <unordered_map>
+#include <memory>
+#include <optional>
 
+namespace webserver {
 
-// 表示 Request 或 Response 中数据的处理状态
-enum MSGSTATUS{
-    HANDLE_INIT,      // 正在接收/发送头部数据（请求行、请求头）
-    HANDLE_HEAD,      // 正在接收/发送消息首部
-    HANDLE_BODY,      // 正在接收/发送消息体
-    HADNLE_COMPLATE,  // 所有数据都已经处理完成
-    HANDLE_ERROR,     // 处理过程中发生错误
+/**
+ * @brief HTTP消息处理状态枚举
+ */
+enum class MessageStatus {
+    INIT,       ///< 初始状态，等待处理请求行
+    HEADERS,    ///< 处理HTTP头部
+    BODY,       ///< 处理消息体
+    COMPLETE,   ///< 处理完成
+    ERROR       ///< 处理出错
 };
 
-// 表示消息体的类型
-enum MSGBODYTYPE{
-    FILE_TYPE,      // 消息体是文件
-    HTML_TYPE,      // 消息体是 HTML 页面
-    EMPTY_TYPE,     // 消息体为空
+/**
+ * @brief HTTP响应消息体类型
+ */
+enum class BodyType {
+    FILE,       ///< 文件类型
+    HTML,       ///< HTML页面
+    EMPTY       ///< 空消息体
 };
 
-// 当接收文件时，消息体会分不同的部分，用该类型表示文件消息体已经处理到哪个部分
-enum FILEMSGBODYSTATUS{
-    FILE_BEGIN_FLAG,   // 正在获取并处理表示文件开始的标志行
-    FILE_HEAD,         // 正在获取并处理文件属性部分
-    FILE_CONTENT,      // 正在获取并处理文件内容的部分
-    FILE_COMPLATE      // 文件已经处理完成
+/**
+ * @brief 文件上传处理状态
+ */
+enum class FileUploadStatus {
+    BOUNDARY,   ///< 查找边界标识
+    HEADERS,    ///< 处理文件头部信息
+    CONTENT,    ///< 处理文件内容
+    COMPLETE    ///< 文件处理完成
 };
 
-// 定义 Request 和 Response 公共的部分，即消息首部、消息体（可以获取消息首部的某个字段、修改与获取消息体相关的数据）
-class Message{
+/**
+ * @brief HTTP消息基类
+ * 
+ * 提供HTTP请求和响应消息的公共接口和数据结构
+ */
+class HttpMessage {
 public:
-    Message() : status(HANDLE_INIT){  // 默认构造函数，将状态设置为初始值(正在接收/发送头部数据（请求行、请求头）)
-
-    }
-
-public:
-    // 请求消息和响应消息都需要使用的一些成员
-    MSGSTATUS status;                                        // 记录消息的接收状态，表示整个请求报文收到了多少/发送了多少
-
-    std::unordered_map<std::string, std::string> msgHeader;  // 保存消息首部，存储的是键值对（key-value pairs）首部字段 map（如 Content-Type, Content-Length）
-
-private:
+    HttpMessage() = default;
+    virtual ~HttpMessage() = default;
     
-};
-//请求消息
-//继承自 Message，代表从浏览器接收到的 HTTP 请求：
-// 继承 Message，对请求行的修改和获取，保存收到的首部选项
-class Request : public Message{
-public:
-    Request() : Message(){
-
-    }
-    // 设置与返回请求行相关字段
-    /**
-     * @brief 设置请求行
-     *
-     * 从传入的字符串中提取请求方法、请求资源和HTTP版本，并保存到类中相应的成员变量中。
-     * 比如 GET /index.html HTTP/1.1
-     * @param requestLine 请求行字符串
-     */
-    void setRequestLine(const std::string &requestLine){
-        std::istringstream lineStream(requestLine);
-        // 获取请求方法
-        lineStream >> requestMethod;   // GET/POST等
-        // 获取请求资源
-        // lineStream >> rquestResourse;
-        lineStream >> requestResourse;  // 请求的资源路径
-
-        // 获取http版本
-        lineStream >> httpVersion;  // 协议版本
-        
-    }
-
-    // 对于Request 报文，根据传入的一行首部字符串，向首部保存选项
-    /**
-     * @brief 添加头部选项
-     *
-     * 该函数将传入的头部选项解析并存入 msgHeader 中。
-     * 比如Content-Type: multipart/form-data; boundary=xxx
-     * @param headLine 要解析的头部选项字符串
-     */
-    void addHeaderOpt(const std::string &headLine){
-        static std::istringstream lineStream;
-        lineStream.str(headLine);    // 以 istringstream 的方式处理头部选项
-
-        std::string key, value;      // 保存键和值的临时量
-
-        lineStream >> key;           // 获取 key
-        key.pop_back();              // 删除键中的冒号 
-        lineStream.get();            // 删除冒号后的空格
-
-        // 读取空格之后所有的数据，遇到 \n 停止，所以 value 中还包含一个 \r
-        getline(lineStream, value);
-        value.pop_back();            // 删除其中的 \r
-        
-        if(key == "Content-Length"){
-            // 保存消息体的长度
-            contentLength = std::stoll(value);
-
-        }else if(key == "Content-Type"){
-            // 分离消息体类型。消息体类型可能是复杂的消息体，类似 Content-Type: multipart/form-data; boundary=---------------------------24436669372671144761803083960
-            
-            // 先找出值中分号的位置
-            std::string::size_type semIndex = value.find(';');
-            // 根据分号查找的结果，保存类型的结果
-            if(semIndex != std::string::npos){
-                msgHeader[key] = value.substr(0, semIndex);
-                std::string::size_type eqIndex = value.find('=', semIndex);
-                key = value.substr(semIndex + 2, eqIndex - semIndex - 2);
-                msgHeader[key] = value.substr(eqIndex + 1);
-            }else{
-                msgHeader[key] = value;
-            }
-            
-        }else{
-            msgHeader[key] = value;
-        }
-
-        
-    }
-
-public:
-    std::string recvMsg;           // 收到但是还未处理的数据
-
-
-    std::string requestMethod;     // 请求消息的请求方法
-    std::string requestResourse;    // 请求的资源
-    std::string httpVersion;       // 请求的HTTP版本
-
-    long long contentLength = 0;                 // 记录消息体的长度
-    long long msgBodyRecvLen;                    // 已经接收的消息体长度
-
-    std::string recvFileName;                    // 如果客户端发送的是文件，记录文件的名字
-    FILEMSGBODYSTATUS fileMsgStatus;             // 记录表示文件的消息体已经处理到哪些部分
-private:
-
-};
-// 响应消息
-// 继承 Message，对于状态行修改和获取，设置要发送的首部选项
-class Response : public Message{
-public:
-    Response() : Message(){
-
-    }
-
-public:
-    // 保存状态行相关数据
-    std::string responseHttpVersion = "HTTP/1.1";
-    std::string responseStatusCode;  // 如 200、404
-    std::string responseStatusDes;   // 如 OK、Not Found
-
-    // 以下成员主要用于在发送响应消息时暂存相关的数据
-
-    MSGBODYTYPE bodyType;                                 // 消息的类型
-    std::string bodyFileName;                             // 要发送数据的路径
-
-
-    std::string beforeBodyMsg;                            // 消息体之前的所有数据
-    int beforeBodyMsgLen;                                 // 消息体之前的所有数据的长度
-
-    std::string msgBody;                                  // 在字符串中保存 HTML 类型的消息体
-    unsigned long msgBodyLen;                             // 消息体的长度
-
-    int fileMsgFd;                                        // 文件类型的消息体保存文件描述符
-
-    unsigned long curStatusHasSendLen;                    // 记录在当前状态下，这些数据已经发送的长度
-private:
+    // 禁用拷贝，启用移动
+    HttpMessage(const HttpMessage&) = delete;
+    HttpMessage& operator=(const HttpMessage&) = delete;
+    HttpMessage(HttpMessage&&) = default;
+    HttpMessage& operator=(HttpMessage&&) = default;
     
+    MessageStatus getStatus() const noexcept { return status_; }
+    void setStatus(MessageStatus status) noexcept { status_ = status; }
+    
+    const std::unordered_map<std::string, std::string>& getHeaders() const noexcept {
+        return headers_;
+    }
+    
+    std::optional<std::string> getHeader(const std::string& key) const {
+        auto it = headers_.find(key);
+        return (it != headers_.end()) ? std::make_optional(it->second) : std::nullopt;
+    }
+    
+    void setHeader(const std::string& key, const std::string& value) {
+        headers_[key] = value;
+    }
+
+protected:
+    MessageStatus status_{MessageStatus::INIT};
+    std::unordered_map<std::string, std::string> headers_;
 };
 
+/**
+ * @brief HTTP请求消息类
+ * 
+ * 封装HTTP请求的解析和状态管理
+ */
+class HttpRequest : public HttpMessage {
+public:
+    HttpRequest() = default;
+    
+    /**
+     * @brief 解析HTTP请求行
+     * @param requestLine 请求行字符串 (如: "GET /index.html HTTP/1.1")
+     * @throws std::invalid_argument 请求行格式错误时抛出
+     */
+    void parseRequestLine(const std::string& requestLine);
+    
+    /**
+     * @brief 解析HTTP头部字段
+     * @param headerLine 头部行字符串 (如: "Content-Type: text/html")
+     * @throws std::invalid_argument 头部格式错误时抛出
+     */
+    void parseHeaderLine(const std::string& headerLine);
+    
+    // Getters
+    const std::string& getMethod() const noexcept { return method_; }
+    const std::string& getUri() const noexcept { return uri_; }
+    const std::string& getVersion() const noexcept { return version_; }
+    size_t getContentLength() const noexcept { return contentLength_; }
+    
+    // 文件上传相关
+    const std::string& getFileName() const noexcept { return fileName_; }
+    void setFileName(const std::string& fileName) { fileName_ = fileName; }
+    
+    FileUploadStatus getFileUploadStatus() const noexcept { return fileUploadStatus_; }
+    void setFileUploadStatus(FileUploadStatus status) noexcept { fileUploadStatus_ = status; }
+    
+    // 接收缓冲区管理
+    std::string& getReceiveBuffer() noexcept { return receiveBuffer_; }
+    const std::string& getReceiveBuffer() const noexcept { return receiveBuffer_; }
+    void clearReceiveBuffer() { receiveBuffer_.clear(); }
 
-#endif
+private:
+    std::string method_;        ///< HTTP方法 (GET, POST等)
+    std::string uri_;           ///< 请求URI
+    std::string version_;       ///< HTTP版本
+    size_t contentLength_{0};   ///< 消息体长度
+    
+    // 文件上传相关
+    std::string fileName_;
+    FileUploadStatus fileUploadStatus_{FileUploadStatus::BOUNDARY};
+    
+    // 接收缓冲区
+    std::string receiveBuffer_;
+};
+
+/**
+ * @brief HTTP响应消息类
+ * 
+ * 封装HTTP响应的构建和发送状态管理
+ */
+class HttpResponse : public HttpMessage {
+public:
+    HttpResponse() = default;
+    
+    /**
+     * @brief 设置HTTP状态行
+     * @param version HTTP版本
+     * @param statusCode 状态码
+     * @param reasonPhrase 状态描述
+     */
+    void setStatusLine(const std::string& version, int statusCode, 
+                      const std::string& reasonPhrase);
+    
+    /**
+     * @brief 构建完整的HTTP响应头部
+     * @return 响应头部字符串
+     */
+    std::string buildHeaders() const;
+    
+    // Getters and Setters
+    const std::string& getVersion() const noexcept { return version_; }
+    int getStatusCode() const noexcept { return statusCode_; }
+    const std::string& getReasonPhrase() const noexcept { return reasonPhrase_; }
+    
+    BodyType getBodyType() const noexcept { return bodyType_; }
+    void setBodyType(BodyType type) noexcept { bodyType_ = type; }
+    
+    const std::string& getBodyContent() const noexcept { return bodyContent_; }
+    void setBodyContent(const std::string& content) { bodyContent_ = content; }
+    
+    const std::string& getFilePath() const noexcept { return filePath_; }
+    void setFilePath(const std::string& path) { filePath_ = path; }
+    
+    int getFileFd() const noexcept { return fileFd_; }
+    void setFileFd(int fd) noexcept { fileFd_ = fd; }
+    
+    size_t getContentLength() const noexcept { return contentLength_; }
+    void setContentLength(size_t length) noexcept { contentLength_ = length; }
+    
+    size_t getSentBytes() const noexcept { return sentBytes_; }
+    void addSentBytes(size_t bytes) noexcept { sentBytes_ += bytes; }
+    void resetSentBytes() noexcept { sentBytes_ = 0; }
+
+private:
+    std::string version_{"HTTP/1.1"};
+    int statusCode_{200};
+    std::string reasonPhrase_{"OK"};
+    
+    BodyType bodyType_{BodyType::EMPTY};
+    std::string bodyContent_;       ///< HTML内容
+    std::string filePath_;          ///< 文件路径
+    int fileFd_{-1};               ///< 文件描述符
+    
+    size_t contentLength_{0};       ///< 内容长度
+    size_t sentBytes_{0};          ///< 已发送字节数
+};
+
+} // namespace webserver

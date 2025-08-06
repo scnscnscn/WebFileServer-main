@@ -1,43 +1,152 @@
-#include "./fileserver/fileserver.h"
+#include "src/core/server.h"
+#include "src/config/server_config.h"
+#include <iostream>
+#include <csignal>
+#include <memory>
 
-int main(void){
+using namespace webserver;
 
-    WebServer webserver;
+// 全局服务器实例，用于信号处理
+std::unique_ptr<WebServer> g_server;
 
-    // 创建线程池
-    int ret = webserver.createThreadPool(4);
-    if(ret != 0){
-        std::cout << outHead("error") << "创建线程池失败" << std::endl;
-        return -1;
+/**
+ * @brief 信号处理函数
+ * @param signum 信号编号
+ */
+void signalHandler(int signum) {
+    std::cout << "\nReceived signal " << signum << ", shutting down gracefully..." << std::endl;
+    if (g_server) {
+        g_server->stop(true);
     }
+}
 
-    // 初始化用于监听的套接字
-    int port = 8888;
-    ret = webserver.createListenFd(port);
-    if(ret != 0){
-        std::cout << outHead("error") << "创建并初始化监听套接字失败" << std::endl;
-        return -2;
-    }
+/**
+ * @brief 打印使用帮助
+ * @param programName 程序名称
+ */
+void printUsage(const char* programName) {
+    std::cout << "Usage: " << programName << " [options]\n"
+              << "Options:\n"
+              << "  -p, --port <port>        Listen port (default: 8888)\n"
+              << "  -t, --threads <count>    Thread pool size (default: CPU cores)\n"
+              << "  -d, --document-root <path>  Document root directory (default: ./filedir)\n"
+              << "  -l, --log-level <level>  Log level (debug|info|warn|error, default: info)\n"
+              << "  -f, --log-file <file>    Log file path (default: console output)\n"
+              << "  -c, --config <file>      Configuration file path\n"
+              << "  -h, --help               Show this help message\n"
+              << std::endl;
+}
 
-    // 初始化监听的epoll例程
-    ret = webserver.createEpoll();
-    if(ret != 0){
-        std::cout << outHead("error") << "初始化监听的epoll例程失败" << std::endl;
-        return -3;
+/**
+ * @brief 程序入口点
+ * @param argc 参数个数
+ * @param argv 参数数组
+ * @return 退出码
+ */
+int main(int argc, char* argv[]) {
+    try {
+        // 解析命令行参数或配置文件
+        ServerConfig config;
+        
+        // 简单的命令行参数解析
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+            
+            if (arg == "-h" || arg == "--help") {
+                printUsage(argv[0]);
+                return 0;
+            } else if (arg == "-p" || arg == "--port") {
+                if (i + 1 < argc) {
+                    config.port = std::stoi(argv[++i]);
+                } else {
+                    std::cerr << "Error: " << arg << " requires a value" << std::endl;
+                    return 1;
+                }
+            } else if (arg == "-t" || arg == "--threads") {
+                if (i + 1 < argc) {
+                    config.threadCount = std::stoi(argv[++i]);
+                } else {
+                    std::cerr << "Error: " << arg << " requires a value" << std::endl;
+                    return 1;
+                }
+            } else if (arg == "-d" || arg == "--document-root") {
+                if (i + 1 < argc) {
+                    config.documentRoot = argv[++i];
+                } else {
+                    std::cerr << "Error: " << arg << " requires a value" << std::endl;
+                    return 1;
+                }
+            } else if (arg == "-l" || arg == "--log-level") {
+                if (i + 1 < argc) {
+                    std::string level = argv[++i];
+                    if (level == "debug") config.logLevel = ServerConfig::LogLevel::DEBUG;
+                    else if (level == "info") config.logLevel = ServerConfig::LogLevel::INFO;
+                    else if (level == "warn") config.logLevel = ServerConfig::LogLevel::WARN;
+                    else if (level == "error") config.logLevel = ServerConfig::LogLevel::ERROR;
+                    else {
+                        std::cerr << "Error: Invalid log level: " << level << std::endl;
+                        return 1;
+                    }
+                } else {
+                    std::cerr << "Error: " << arg << " requires a value" << std::endl;
+                    return 1;
+                }
+            } else if (arg == "-f" || arg == "--log-file") {
+                if (i + 1 < argc) {
+                    config.logFile = argv[++i];
+                } else {
+                    std::cerr << "Error: " << arg << " requires a value" << std::endl;
+                    return 1;
+                }
+            } else if (arg == "-c" || arg == "--config") {
+                if (i + 1 < argc) {
+                    try {
+                        config = ServerConfig::loadFromFile(argv[++i]);
+                    } catch (const std::exception& e) {
+                        std::cerr << "Error loading config file: " << e.what() << std::endl;
+                        return 1;
+                    }
+                } else {
+                    std::cerr << "Error: " << arg << " requires a value" << std::endl;
+                    return 1;
+                }
+            } else {
+                std::cerr << "Error: Unknown option: " << arg << std::endl;
+                printUsage(argv[0]);
+                return 1;
+            }
+        }
+        
+        // 验证配置
+        try {
+            config.validate();
+        } catch (const std::exception& e) {
+            std::cerr << "Configuration error: " << e.what() << std::endl;
+            return 1;
+        }
+        
+        // 打印配置信息
+        std::cout << "Starting WebFileServer with configuration:\n"
+                  << config.toString() << std::endl;
+        
+        // 设置信号处理
+        std::signal(SIGINT, signalHandler);
+        std::signal(SIGTERM, signalHandler);
+        
+        // 创建并启动服务器
+        g_server = std::make_unique<WebServer>(config);
+        
+        std::cout << "WebFileServer starting..." << std::endl;
+        g_server->start();
+        
+        std::cout << "WebFileServer stopped." << std::endl;
+        return 0;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Fatal error: " << e.what() << std::endl;
+        return 1;
+    } catch (...) {
+        std::cerr << "Unknown fatal error occurred" << std::endl;
+        return 1;
     }
-    // 向 epoll 中添加监听套接字
-    ret = webserver.epollAddListenFd();
-    if(ret != 0){
-        std::cout << outHead("error") << "epoll 添加监听套接字失败" << std::endl;
-        return -4;
-    }
-
-    // 开启监听并处理请求
-    ret = webserver.waitEpoll();
-    if(ret != 0){
-        std::cout << outHead("error") << "epoll 例程监听失败" << std::endl;
-        return -5;
-    }
-    
-    return 0;
 }
